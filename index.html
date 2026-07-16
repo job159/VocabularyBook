@@ -342,6 +342,9 @@ h1.title .grad{background:linear-gradient(100deg,var(--primary),var(--primary-2)
 .footer b{color:var(--text-2)}
 
 .sr-tip{font-size:12px;color:var(--muted)}
+/* 發音診斷提示(僅在無法發音時出現) */
+.tts-toast{position:fixed;left:50%;bottom:calc(24px + env(safe-area-inset-bottom,0px));transform:translateX(-50%) translateY(10px);max-width:88vw;background:var(--text);color:var(--surface);padding:11px 16px;border-radius:12px;font-size:13.5px;font-weight:700;box-shadow:var(--shadow-lg);z-index:200;opacity:0;pointer-events:none;transition:opacity .25s,transform .25s;text-align:center;line-height:1.55}
+.tts-toast.show{opacity:.97;transform:translateX(-50%) translateY(0)}
 kbd{background:var(--surface-2);border:1px solid var(--border-strong);border-bottom-width:2px;border-radius:6px;padding:1px 6px;font-size:11px;font-family:inherit;font-weight:700}
 
 @media (max-width:640px){
@@ -596,63 +599,86 @@ function applyTheme(t){ document.documentElement.setAttribute('data-theme', t); 
 applyTheme(savedTheme);
 $('#btnTheme').addEventListener('click',()=>applyTheme(document.documentElement.getAttribute('data-theme')==='dark'?'light':'dark'));
 
-/* ---------- 語音朗讀(含手機 / iOS 相容處理) ---------- */
+/* ---------- 語音朗讀(手機 / iOS / Android 相容 + 診斷)---------- */
 const TTS = ('speechSynthesis' in window);
 let voices = [];
 let audioUnlocked = false;
-function loadVoices(){ try{ voices = TTS ? (speechSynthesis.getVoices()||[]) : []; }catch(e){ voices=[]; } }
-if(TTS){ loadVoices(); try{ speechSynthesis.onvoiceschanged = loadVoices; }catch(e){} }
+const IS_IOS = /iP(hone|ad|od)/.test(navigator.userAgent||'') || (navigator.platform==='MacIntel' && (navigator.maxTouchPoints||0)>1);
+function loadVoices(){ try{ voices = TTS ? (speechSynthesis.getVoices()||[]) : []; }catch(e){ voices=[]; } return voices; }
+if(TTS){
+  loadVoices();
+  try{ speechSynthesis.addEventListener('voiceschanged', loadVoices); }catch(e){ try{ speechSynthesis.onvoiceschanged = loadVoices; }catch(e2){} }
+}
 function pickVoice(){
   return voices.find(v=>/en[-_]US/i.test(v.lang)) ||
-         voices.find(v=>/^en/i.test(v.lang)) ||
-         voices.find(v=>/en/i.test(v.name)) || null;
+         voices.find(v=>/^en[-_]GB/i.test(v.lang)) ||
+         voices.find(v=>/^en/i.test(v.lang||'')) ||
+         voices.find(v=>/english/i.test(v.name||'')) || null;
 }
-/* 平台判斷:iOS 與 Android 的語音行為相反,需分別處理。
-   - iOS:speak() 必須「在使用者手勢當下同步」呼叫才會發聲;且需先用靜音話語解鎖。
-   - Android Chrome:不需手勢,但「cancel() 後立刻 speak()」常會無聲,需稍等再播。 */
-const IS_IOS = /iP(hone|ad|od)/.test(navigator.userAgent||'') || (navigator.platform==='MacIntel' && (navigator.maxTouchPoints||0)>1);
+/* 診斷提示:只有真的無法發音時才顯示,平常完全不干擾 */
+let ttsToastEl=null, ttsToastT=null, ttsWarnedNoEn=false;
+function ttsToast(msg){
+  try{
+    if(!ttsToastEl){ ttsToastEl=document.createElement('div'); ttsToastEl.className='tts-toast'; (document.body||document.documentElement).appendChild(ttsToastEl); }
+    ttsToastEl.textContent=msg; ttsToastEl.classList.add('show');
+    clearTimeout(ttsToastT); ttsToastT=setTimeout(()=>{ ttsToastEl && ttsToastEl.classList.remove('show'); }, 5000);
+  }catch(e){}
+}
+/* iOS 需要在使用者手勢內用靜音話語解鎖;Android 不需要(且會被殘留話語干擾) */
 function primeAudio(){
   if(!TTS) return;
   try{
     if(speechSynthesis.paused){ speechSynthesis.resume(); }
-    if(IS_IOS && !audioUnlocked){          // 只有 iOS 需要靜音解鎖;Android 反而會被這個殘留話語干擾
-      const u = new SpeechSynthesisUtterance(' ');
-      u.volume = 0; u.lang = 'en-US';
-      speechSynthesis.speak(u);
-      audioUnlocked = true;
+    if(IS_IOS && !audioUnlocked){
+      const u=new SpeechSynthesisUtterance(' '); u.volume=0; u.lang='en-US';
+      speechSynthesis.speak(u); audioUnlocked=true;
     }
   }catch(e){}
 }
-// 任一使用者手勢都先暖機:載入語音清單(Android 語音常為非同步載入),並在手勢內解鎖 iOS 音訊
 ['pointerdown','touchend','mousedown','keydown'].forEach(ev=>
   document.addEventListener(ev, ()=>{ loadVoices(); primeAudio(); }, {capture:true, passive:true}));
 
+function doSpeak(text, el){
+  const startPlaying=()=>{ if(el) el.classList.add('playing'); };
+  const stopPlaying=()=>{ if(el) el.classList.remove('playing'); };
+  if(!voices.length) loadVoices();
+  startPlaying();
+  const u=new SpeechSynthesisUtterance(text);
+  u.lang='en-US'; u.rate=0.92; u.pitch=1; u.volume=1;
+  const v=pickVoice(); if(v) u.voice=v;
+  // 台灣手機常見:有語音引擎但沒裝英語語音 → 朗讀英文會無聲。提示一次(仍會嘗試發音)。
+  if(!v && voices.length && !ttsWarnedNoEn){ ttsWarnedNoEn=true; ttsToast('系統沒有「英語語音」,朗讀英文可能無聲。請到 設定 → 文字轉語音輸出 →（Google 語音服務）安裝 English (US) 語音資料。'); }
+  let started=false;
+  u.onstart=()=>{ started=true; };
+  u.onend=stopPlaying;
+  u.onerror=(ev)=>{ stopPlaying(); const err=(ev&&ev.error)||''; if(err && err!=='interrupted' && err!=='canceled'){ ttsToast('發音失敗('+err+')。請確認手機未靜音、且系統已安裝英語語音。'); } };
+  const run=()=>{
+    try{ if(speechSynthesis.paused) speechSynthesis.resume(); }catch(e){}
+    try{ speechSynthesis.speak(u); }
+    catch(e){ stopPlaying(); ttsToast('發音失敗:'+((e&&e.message)||e)); return; }
+    // Android:長句偶爾被系統自動暫停,短時間內連續喚醒
+    let tries=0; const wake=setInterval(()=>{ try{ if(speechSynthesis.paused) speechSynthesis.resume(); }catch(e){} if(++tries>14||(!speechSynthesis.speaking&&!speechSynthesis.pending)) clearInterval(wake); },200);
+    // 診斷:1.8 秒內完全沒開始播,提示可能原因(voices=0 / 系統無語音 / 靜音)
+    setTimeout(()=>{ if(!started && !speechSynthesis.speaking){ ttsToast('偵測不到聲音（voices='+voices.length+'）。請確認:①手機媒體音量已開 ②系統「文字轉語音」已裝英語語音 ③用 Chrome 開啟。'); } }, 1800);
+  };
+  if(speechSynthesis.speaking || speechSynthesis.pending){
+    try{ speechSynthesis.cancel(); }catch(e){}
+    if(IS_IOS){ run(); } else { setTimeout(run, 140); }  // Android:cancel 後稍等再播,否則無聲
+  } else { run(); }
+}
 function speak(text, el){
-  if(!TTS || !text) return;
-  try{
-    if(!voices.length) loadVoices();
-    const u = new SpeechSynthesisUtterance(text);
-    u.lang = 'en-US'; u.rate = 0.92; u.pitch = 1; u.volume = 1;
-    const v = pickVoice(); if(v) u.voice = v;
-    if(el){ el.classList.add('playing'); const done=()=>el.classList.remove('playing'); u.onend=done; u.onerror=done; }
-    audioUnlocked = true;
-    const fire = ()=>{
-      try{ if(speechSynthesis.paused) speechSynthesis.resume(); }catch(e){}
-      try{ speechSynthesis.speak(u); }catch(e){ if(el) el.classList.remove('playing'); return; }
-      // Android Chrome:長句偶爾被系統自動暫停,短時間內連續喚醒確保順暢
-      let tries=0; const wake=setInterval(()=>{
-        try{ if(speechSynthesis.paused) speechSynthesis.resume(); }catch(e){}
-        if(++tries>12 || (!speechSynthesis.speaking && !speechSynthesis.pending)) clearInterval(wake);
-      }, 200);
-    };
-    if(speechSynthesis.speaking || speechSynthesis.pending){
-      try{ speechSynthesis.cancel(); }catch(e){}
-      if(IS_IOS){ fire(); }              // iOS:必須同步在手勢內,不可延遲
-      else { setTimeout(fire, 140); }    // Android:cancel 後稍等再播,否則無聲
-    } else {
-      fire();                            // 沒有正在播的話,兩平台都直接播(最可靠)
-    }
-  }catch(e){ if(el) el.classList.remove('playing'); }
+  if(!TTS){ ttsToast('此瀏覽器不支援語音朗讀,請改用 Chrome 開啟本頁。'); return; }
+  if(!text) return;
+  audioUnlocked=true;
+  // Android 語音清單常為非同步載入:尚未載入時先等一下再播(iOS 必須同步,直接播)
+  if(voices.length || IS_IOS){ doSpeak(text, el); return; }
+  loadVoices();
+  if(voices.length){ doSpeak(text, el); return; }
+  if(el) el.classList.add('playing');
+  let waited=0; const iv=setInterval(()=>{
+    loadVoices(); waited+=100;
+    if(voices.length || waited>=1500){ clearInterval(iv); doSpeak(text, el); }
+  }, 100);
 }
 
 /* ---------- 工具 ---------- */
