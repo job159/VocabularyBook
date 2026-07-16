@@ -607,39 +607,52 @@ function pickVoice(){
          voices.find(v=>/^en/i.test(v.lang)) ||
          voices.find(v=>/en/i.test(v.name)) || null;
 }
-/* iOS/行動裝置:語音必須在「使用者手勢」中先播一次(靜音)才能解鎖 */
-function unlockAudio(){
-  if(audioUnlocked || !TTS) return;
+/* 平台判斷:iOS 與 Android 的語音行為相反,需分別處理。
+   - iOS:speak() 必須「在使用者手勢當下同步」呼叫才會發聲;且需先用靜音話語解鎖。
+   - Android Chrome:不需手勢,但「cancel() 後立刻 speak()」常會無聲,需稍等再播。 */
+const IS_IOS = /iP(hone|ad|od)/.test(navigator.userAgent||'') || (navigator.platform==='MacIntel' && (navigator.maxTouchPoints||0)>1);
+function primeAudio(){
+  if(!TTS) return;
   try{
-    loadVoices();
-    const u = new SpeechSynthesisUtterance(' ');
-    u.volume = 0; u.lang = 'en-US';
-    speechSynthesis.speak(u);
-    audioUnlocked = true;
+    if(speechSynthesis.paused){ speechSynthesis.resume(); }
+    if(IS_IOS && !audioUnlocked){          // 只有 iOS 需要靜音解鎖;Android 反而會被這個殘留話語干擾
+      const u = new SpeechSynthesisUtterance(' ');
+      u.volume = 0; u.lang = 'en-US';
+      speechSynthesis.speak(u);
+      audioUnlocked = true;
+    }
   }catch(e){}
 }
-['touchstart','pointerdown','mousedown','keydown'].forEach(ev=>
-  document.addEventListener(ev, unlockAudio, {once:true, passive:true, capture:true}));
+// 任一使用者手勢都先暖機:載入語音清單(Android 語音常為非同步載入),並在手勢內解鎖 iOS 音訊
+['pointerdown','touchend','mousedown','keydown'].forEach(ev=>
+  document.addEventListener(ev, ()=>{ loadVoices(); primeAudio(); }, {capture:true, passive:true}));
 
 function speak(text, el){
   if(!TTS || !text) return;
   try{
-    // 若正在播放先停止(部分手機需先 cancel 再 speak)
-    const wasBusy = speechSynthesis.speaking || speechSynthesis.pending;
-    if(wasBusy){ speechSynthesis.cancel(); }
     if(!voices.length) loadVoices();
-    const doSpeak = ()=>{
-      const u = new SpeechSynthesisUtterance(text);
-      u.lang = 'en-US'; u.rate = 0.9; u.pitch = 1; u.volume = 1;
-      const v = pickVoice(); if(v) u.voice = v;
-      if(el){ el.classList.add('playing'); const done=()=>el.classList.remove('playing'); u.onend=done; u.onerror=done; }
-      try{ speechSynthesis.speak(u); }catch(e){ if(el) el.classList.remove('playing'); }
-      // iOS/Chrome:被暫停時需喚醒
-      setTimeout(()=>{ try{ if(speechSynthesis.paused) speechSynthesis.resume(); }catch(e){} }, 80);
+    const u = new SpeechSynthesisUtterance(text);
+    u.lang = 'en-US'; u.rate = 0.92; u.pitch = 1; u.volume = 1;
+    const v = pickVoice(); if(v) u.voice = v;
+    if(el){ el.classList.add('playing'); const done=()=>el.classList.remove('playing'); u.onend=done; u.onerror=done; }
+    audioUnlocked = true;
+    const fire = ()=>{
+      try{ if(speechSynthesis.paused) speechSynthesis.resume(); }catch(e){}
+      try{ speechSynthesis.speak(u); }catch(e){ if(el) el.classList.remove('playing'); return; }
+      // Android Chrome:長句偶爾被系統自動暫停,短時間內連續喚醒確保順暢
+      let tries=0; const wake=setInterval(()=>{
+        try{ if(speechSynthesis.paused) speechSynthesis.resume(); }catch(e){}
+        if(++tries>12 || (!speechSynthesis.speaking && !speechSynthesis.pending)) clearInterval(wake);
+      }, 200);
     };
-    // 剛 cancel 後,行動瀏覽器(尤其 Android Chrome)需極短延遲再播,否則可能無聲
-    if(wasBusy){ setTimeout(doSpeak, 80); } else { doSpeak(); }
-  }catch(e){}
+    if(speechSynthesis.speaking || speechSynthesis.pending){
+      try{ speechSynthesis.cancel(); }catch(e){}
+      if(IS_IOS){ fire(); }              // iOS:必須同步在手勢內,不可延遲
+      else { setTimeout(fire, 140); }    // Android:cancel 後稍等再播,否則無聲
+    } else {
+      fire();                            // 沒有正在播的話,兩平台都直接播(最可靠)
+    }
+  }catch(e){ if(el) el.classList.remove('playing'); }
 }
 
 /* ---------- 工具 ---------- */
