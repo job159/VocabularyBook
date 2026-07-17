@@ -604,6 +604,9 @@ const TTS = ('speechSynthesis' in window);
 let voices = [];
 let audioUnlocked = false;
 const IS_IOS = /iP(hone|ad|od)/.test(navigator.userAgent||'') || (navigator.platform==='MacIntel' && (navigator.maxTouchPoints||0)>1);
+/* App 內建瀏覽器(LINE / FB / IG / Messenger / KakaoTalk / 微信 …):Android WebView 多半不支援語音合成 */
+const UA = navigator.userAgent||'';
+const IS_INAPP = /\bwv\b|; wv\)|Line\/|FBAN|FBAV|FB_IAB|Instagram|Messenger|MicroMessenger|KAKAOTALK|GSA\//i.test(UA);
 function loadVoices(){ try{ voices = TTS ? (speechSynthesis.getVoices()||[]) : []; }catch(e){ voices=[]; } return voices; }
 if(TTS){
   loadVoices();
@@ -646,8 +649,12 @@ function doSpeak(text, el){
   const u=new SpeechSynthesisUtterance(text);
   u.lang='en-US'; u.rate=0.92; u.pitch=1; u.volume=1;
   const v=pickVoice(); if(v) u.voice=v;
-  // 台灣手機常見:有語音引擎但沒裝英語語音 → 朗讀英文會無聲。提示一次(仍會嘗試發音)。
-  if(!v && voices.length && !ttsWarnedNoEn){ ttsWarnedNoEn=true; ttsToast('系統沒有「英語語音」,朗讀英文可能無聲。請到 設定 → 文字轉語音輸出 →（Google 語音服務）安裝 English (US) 語音資料。'); }
+  // 提示一次(仍會嘗試發音):App 內建瀏覽器 → 請改用 Chrome;否則多半是沒裝英語語音
+  if(!v && !ttsWarnedNoEn){
+    ttsWarnedNoEn=true;
+    if(IS_INAPP){ ttsToast('偵測到 App 內建瀏覽器(如 LINE),多半不支援發音。請按右上角「⋯」→「用其他/預設瀏覽器開啟」,改用 Chrome。'); }
+    else if(voices.length){ ttsToast('系統沒有「英語語音」,朗讀英文可能無聲。請到 設定 → 文字轉語音輸出 →（Google 語音服務）安裝 English (US) 語音資料。'); }
+  }
   let started=false;
   u.onstart=()=>{ started=true; };
   u.onend=stopPlaying;
@@ -658,8 +665,12 @@ function doSpeak(text, el){
     catch(e){ stopPlaying(); ttsToast('發音失敗:'+((e&&e.message)||e)); return; }
     // Android:長句偶爾被系統自動暫停,短時間內連續喚醒
     let tries=0; const wake=setInterval(()=>{ try{ if(speechSynthesis.paused) speechSynthesis.resume(); }catch(e){} if(++tries>14||(!speechSynthesis.speaking&&!speechSynthesis.pending)) clearInterval(wake); },200);
-    // 診斷:1.8 秒內完全沒開始播,提示可能原因(voices=0 / 系統無語音 / 靜音)
-    setTimeout(()=>{ if(!started && !speechSynthesis.speaking){ ttsToast('偵測不到聲音（voices='+voices.length+'）。請確認:①手機媒體音量已開 ②系統「文字轉語音」已裝英語語音 ③用 Chrome 開啟。'); } }, 1800);
+    // 診斷:1.8 秒內完全沒開始播,提示可能原因
+    setTimeout(()=>{ if(!started && !speechSynthesis.speaking){
+      ttsToast(IS_INAPP
+        ? 'App 內建瀏覽器(如 LINE)不支援發音。請按右上角「⋯」→「用其他/預設瀏覽器開啟」,改用 Chrome。'
+        : '偵測不到聲音（voices='+voices.length+'）。請確認:①手機媒體音量已開 ②系統「文字轉語音」已裝英語語音 ③用 Chrome 開啟。');
+    } }, 1800);
   };
   if(speechSynthesis.speaking || speechSynthesis.pending){
     try{ speechSynthesis.cancel(); }catch(e){}
