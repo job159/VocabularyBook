@@ -117,4 +117,5 @@ python -m http.server 8777
 
 © VOCA 單字書 · 可自由用於教學與商業用途
 # Contriburor
-** Eason
+**`Eason周`**
+- [Eason](https://github.com/easonzh824-droid)
